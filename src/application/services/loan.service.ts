@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Inject } from '@nestjs/common';
 import { RequestLoanPort } from '../../domain/ports/in/request-loan.port';
 import { LoanRepositoryPort } from '../../domain/ports/out/loan-repository.port';
 import { PaymentRepositoryPort } from '../../domain/ports/out/payment-repository.port';
@@ -10,9 +10,9 @@ import { LoanType } from '../../domain/entities/loan-type.entity';
 @Injectable()
 export class LoanService implements RequestLoanPort {
   constructor(
-    private readonly loanRepository: LoanRepositoryPort,
-    private readonly paymentRepository: PaymentRepositoryPort,
-    private readonly userExternal: UserExternalPort,
+    @Inject('LoanRepositoryPort') private readonly loanRepository: LoanRepositoryPort,
+    @Inject('PaymentRepositoryPort') private readonly paymentRepository: PaymentRepositoryPort,
+    @Inject('UserExternalPort') private readonly userExternal: UserExternalPort,
   ) {}
 
   async requestLoan(loanData: { userId: string; amount: number; typeId: string }): Promise<Loan> {
