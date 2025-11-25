@@ -1,60 +1,65 @@
-import { LoanType } from './loan-type.entity';
+// loan-service/src/domain/entities/loan.entity.ts
+
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToMany } from 'typeorm';
+import { Payment } from './payment.entity';
 
 export type LoanStatus = 'solicitud' | 'pendiente_aprobacion' | 'aprobado' | 'rechazado' | 'activo' | 'pagado' | 'cancelado';
-
 export type PaymentFrequency = 'daily' | 'weekly' | 'biweekly' | 'monthly';
 
+@Entity('loans')
 export class Loan {
+  @PrimaryGeneratedColumn('uuid')
   id: string;
+
+  @Column({ name: 'user_id' })
   userId: string;
+
+  @Column({ type: 'decimal', precision: 12, scale: 2 })
   amount: number;
+
+  @Column({ type: 'decimal', precision: 5, scale: 2, name: 'interest_rate', default: 0 })
   interestRate: number;
+
+  @Column({ type: 'varchar', length: 50, default: 'solicitud' })
   status: LoanStatus;
-  type: LoanType;
-  termMonths?: number; // for fixed installments
-  installmentValue?: number; // for fixed installments
-  paymentFrequency?: PaymentFrequency; // for fixed installments
-  createdAt: Date;
-  approvedAt?: Date;
+
+  @Column({ type: 'varchar', length: 50, name: 'loan_type' })
+  type: string; // 'monthly_interest' | 'fixed_installments'
+
+  @Column({ type: 'int', nullable: true, name: 'term_months' })
+  termMonths?: number;
+
+  @Column({ type: 'decimal', precision: 12, scale: 2, nullable: true, name: 'installment_value' })
+  installmentValue?: number;
+
+  @Column({ type: 'varchar', length: 20, nullable: true, name: 'payment_frequency' })
+  paymentFrequency?: PaymentFrequency;
+
+  @Column({ type: 'decimal', precision: 12, scale: 2, name: 'remaining_balance' })
   remainingBalance: number;
 
-  constructor(
-    id: string,
-    userId: string,
-    amount: number,
-    interestRate: number,
-    status: LoanStatus,
-    type: LoanType,
-    termMonths?: number,
-    installmentValue?: number,
-    paymentFrequency?: PaymentFrequency,
-    createdAt: Date = new Date(),
-    approvedAt?: Date,
-    remainingBalance: number = amount
-  ) {
-    this.id = id;
-    this.userId = userId;
-    this.amount = amount;
-    this.interestRate = interestRate;
-    this.status = status;
-    this.type = type;
-    this.termMonths = termMonths;
-    this.installmentValue = installmentValue;
-    this.paymentFrequency = paymentFrequency;
-    this.createdAt = createdAt;
-    this.approvedAt = approvedAt;
-    this.remainingBalance = remainingBalance;
-  }
+  @CreateDateColumn({ name: 'created_at' })
+  createdAt: Date;
 
+  @Column({ type: 'timestamp', nullable: true, name: 'approved_at' })
+  approvedAt?: Date;
+
+  @UpdateDateColumn({ name: 'updated_at' })
+  updatedAt: Date;
+
+  @OneToMany(() => Payment, payment => payment.loan)
+  payments: Payment[];
+
+  // Método para calcular interés mensual
   calculateInterest(): number {
-    return this.remainingBalance * (this.interestRate / 100);
+    return Number(this.remainingBalance) * (Number(this.interestRate) / 100);
   }
 
   isMonthlyInterestType(): boolean {
-    return this.type.id === 'monthly_interest';
+    return this.type === 'monthly_interest';
   }
 
   isFixedInstallmentsType(): boolean {
-    return this.type.id === 'fixed_installments';
+    return this.type === 'fixed_installments';
   }
 }

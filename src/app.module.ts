@@ -1,22 +1,33 @@
-// ...existing code...
+// loan-service/src/app.module.ts
+
 import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { HttpModule } from '@nestjs/axios';
 import { LoanService } from './application/services/loan.service';
 import { LoanController } from './infrastructure/adapters/in/loan.controller';
-import { InMemoryLoanRepository } from './infrastructure/adapters/out/repositories/loan.repository';
-import { InMemoryPaymentRepository } from './infrastructure/adapters/out/repositories/payment.repository';
-import { UserExternalAdapter } from './infrastructure/adapters/out/user-external.adapter';
-import { HttpModule } from '@nestjs/axios';
+import { Loan } from './domain/entities/loan.entity';
+import { Payment } from './domain/entities/payment.entity';
 
 @Module({
-  imports: [HttpModule],
-  controllers: [LoanController],
-  providers: [
-    LoanService,
-    // Registra el repo en memoria bajo un token. Ajusta la inyección en LoanService si usas otro token.
-    { provide: 'LoanRepositoryPort', useClass: InMemoryLoanRepository },
-    { provide: 'PaymentRepositoryPort', useClass: InMemoryPaymentRepository },
-    { provide: 'UserExternalPort', useClass: UserExternalAdapter },
+  imports: [
+    // Configuración de TypeORM
+    TypeOrmModule.forRoot({
+      type: 'postgres',
+      host: process.env.DATABASE_HOST || 'localhost',
+      port: parseInt(process.env.DATABASE_PORT || '5434', 10),
+      username: process.env.DATABASE_USER || 'admin',
+      password: process.env.DATABASE_PASSWORD || 'password',
+      database: process.env.DATABASE_NAME || 'loans-service',
+      entities: [Loan, Payment],
+      synchronize: true, // ⚠️ Solo para desarrollo, desactivar en producción
+      logging: process.env.NODE_ENV === 'development',
+    }),
+    // Registrar las entidades en el módulo
+    TypeOrmModule.forFeature([Loan, Payment]),
+    HttpModule,
   ],
+  controllers: [LoanController],
+  providers: [LoanService],
+  exports: [LoanService],
 })
 export class AppModule {}
-// ...existing code...

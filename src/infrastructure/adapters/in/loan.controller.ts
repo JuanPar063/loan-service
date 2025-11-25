@@ -1,8 +1,10 @@
-import { Controller, Post, Body, Get, Param, Put } from '@nestjs/common';
-import { LoanService } from 'application/services/loan.service';
-import { RequestLoanDto } from 'infrastructure/dto/request-loan.dto';
-import { ApproveLoanDto } from 'infrastructure/dto/approve-loan.dto';
-import { MakePaymentDto } from 'infrastructure/dto/make-payment.dto';
+// loan-service/src/infrastructure/adapters/in/loan.controller.ts
+
+import { Controller, Post, Body, Get, Param, Put, HttpCode, HttpStatus } from '@nestjs/common';
+import { LoanService } from '../../../application/services/loan.service';
+import { RequestLoanDto } from '../../dto/request-loan.dto';
+import { ApproveLoanDto } from '../../dto/approve-loan.dto';
+import { MakePaymentDto } from '../../dto/make-payment.dto';
 import {
   ApiTags,
   ApiOperation,
@@ -18,18 +20,53 @@ import {
 export class LoanController {
   constructor(private readonly loanService: LoanService) {}
 
+  /**
+   * ✅ NUEVO: Obtiene el balance completo de préstamos del usuario
+   */
+  @Get('balance/:userId')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ 
+    summary: 'Obtener balance de préstamos del usuario',
+    description: 'Retorna el balance completo incluyendo todos los préstamos, pagos realizados y montos pendientes'
+  })
+  @ApiParam({ name: 'userId', type: String, example: 'user_123' })
+  @ApiOkResponse({
+    description: 'Balance del usuario obtenido exitosamente',
+    schema: {
+      type: 'object',
+      properties: {
+        userId: { type: 'string', example: 'user_123' },
+        totalLoans: { type: 'number', example: 3 },
+        activeLoans: { type: 'number', example: 2 },
+        totalBorrowed: { type: 'number', example: 15000 },
+        totalPaid: { type: 'number', example: 5000 },
+        totalPending: { type: 'number', example: 10000 },
+        loans: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              amount: { type: 'number' },
+              interestRate: { type: 'number' },
+              status: { type: 'string' },
+              remainingBalance: { type: 'number' },
+              totalPaid: { type: 'number' },
+              payments: { type: 'array' },
+            },
+          },
+        },
+      },
+    },
+  })
+  async getBalance(@Param('userId') userId: string) {
+    return this.loanService.getLoanBalance(userId);
+  }
+
   @Post('request')
   @ApiOperation({ summary: 'Solicitar un préstamo' })
   @ApiCreatedResponse({
     description: 'Préstamo solicitado exitosamente',
-    schema: {
-      type: 'object',
-      properties: {
-        id: { type: 'string', example: 'loan_001' },
-        amount: { type: 'number', example: 5000 },
-        status: { type: 'string', example: 'PENDING' },
-      },
-    },
   })
   async request(@Body() dto: RequestLoanDto) {
     return this.loanService.requestLoan(dto);
@@ -38,20 +75,12 @@ export class LoanController {
   @Get('my/:userId')
   @ApiOperation({ summary: 'Obtener préstamos de un usuario' })
   @ApiParam({ name: 'userId', type: String, example: 'user_123' })
-  @ApiOkResponse({
-    description: 'Lista de préstamos del usuario',
-    schema: { type: 'array', items: { type: 'object' } },
-  })
   async getMyLoans(@Param('userId') userId: string) {
     return this.loanService.getLoansByUser(userId);
   }
 
   @Get()
   @ApiOperation({ summary: 'Obtener todos los préstamos' })
-  @ApiOkResponse({
-    description: 'Lista de todos los préstamos',
-    schema: { type: 'array', items: { type: 'object' } },
-  })
   async getAllLoans() {
     return this.loanService.getAllLoans();
   }
@@ -59,10 +88,6 @@ export class LoanController {
   @Get(':id')
   @ApiOperation({ summary: 'Obtener un préstamo por ID' })
   @ApiParam({ name: 'id', type: String, example: 'loan_001' })
-  @ApiOkResponse({
-    description: 'Préstamo encontrado',
-    schema: { type: 'object' },
-  })
   async getLoan(@Param('id') id: string) {
     return this.loanService.getLoanById(id);
   }
@@ -70,16 +95,6 @@ export class LoanController {
   @Put(':id/approve')
   @ApiOperation({ summary: 'Aprobar un préstamo' })
   @ApiParam({ name: 'id', type: String, example: 'loan_001' })
-  @ApiOkResponse({
-    description: 'Préstamo aprobado',
-    schema: {
-      type: 'object',
-      properties: {
-        id: { type: 'string', example: 'loan_001' },
-        status: { type: 'string', example: 'APPROVED' },
-      },
-    },
-  })
   async approve(@Param('id') id: string, @Body() dto: ApproveLoanDto) {
     return this.loanService.approveLoan(id, dto);
   }
@@ -89,15 +104,6 @@ export class LoanController {
   @ApiParam({ name: 'id', type: String, example: 'loan_001' })
   @ApiCreatedResponse({
     description: 'Pago registrado exitosamente',
-    schema: {
-      type: 'object',
-      properties: {
-        paymentId: { type: 'string', example: 'pay_123' },
-        loanId: { type: 'string', example: 'loan_001' },
-        amount: { type: 'number', example: 200 },
-        createdAt: { type: 'string', example: '2025-09-29T12:34:56.000Z' },
-      },
-    },
   })
   async makePayment(@Param('id') id: string, @Body() dto: MakePaymentDto) {
     return this.loanService.makePayment(id, dto.amount);
@@ -106,10 +112,6 @@ export class LoanController {
   @Get(':id/payments')
   @ApiOperation({ summary: 'Obtener pagos de un préstamo' })
   @ApiParam({ name: 'id', type: String, example: 'loan_001' })
-  @ApiOkResponse({
-    description: 'Lista de pagos del préstamo',
-    schema: { type: 'array', items: { type: 'object' } },
-  })
   async getPayments(@Param('id') id: string) {
     return this.loanService.getPaymentsByLoan(id);
   }
@@ -117,34 +119,7 @@ export class LoanController {
   @Put(':id/reject')
   @ApiOperation({ summary: 'Rechazar un préstamo' })
   @ApiParam({ name: 'id', type: String, example: 'loan_001' })
-  @ApiOkResponse({
-    description: 'Préstamo rechazado',
-    schema: {
-      type: 'object',
-      properties: {
-        id: { type: 'string', example: 'loan_001' },
-        status: { type: 'string', example: 'REJECTED' },
-      },
-    },
-  })
   async reject(@Param('id') id: string) {
     return this.loanService.rejectLoan(id);
-  }
-
-  @Get('balance/:userId')
-  @ApiOperation({ summary: 'Obtener balance de un usuario' })
-  @ApiParam({ name: 'userId', type: String, example: 'user_123' })
-  @ApiOkResponse({
-    description: 'Balance del usuario',
-    schema: {
-      type: 'object',
-      properties: {
-        userId: { type: 'string', example: 'user_123' },
-        balance: { type: 'number', example: 1500 },
-      },
-    },
-  })
-  async getBalance(@Param('userId') userId: string) {
-    return this.loanService.getBalance(userId);
   }
 }

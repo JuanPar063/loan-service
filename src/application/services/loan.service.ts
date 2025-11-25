@@ -1,83 +1,230 @@
-import { Injectable } from '@nestjs/common';
-import { RequestLoanPort } from '../../domain/ports/in/request-loan.port';
-import { LoanRepositoryPort } from '../../domain/ports/out/loan-repository.port';
-import { PaymentRepositoryPort } from '../../domain/ports/out/payment-repository.port';
-import { UserExternalPort } from '../../domain/ports/out/user-external.port';
+// loan-service/src/application/services/loan.service.ts
+
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { Loan } from '../../domain/entities/loan.entity';
 import { Payment } from '../../domain/entities/payment.entity';
-import { LoanType } from '../../domain/entities/loan-type.entity';
+
+export interface LoanBalanceDto {
+  userId: string;
+  totalLoans: number;
+  activeLoans: number;
+  totalBorrowed: number;
+  totalPaid: number;
+  totalPending: number;
+  loans: LoanDetailDto[];
+}
+
+export interface LoanDetailDto {
+  id: string;
+  amount: number;
+  interestRate: number;
+  status: string;
+  type: string;
+  remainingBalance: number;
+  totalPaid: number;
+  nextPaymentDue?: Date;
+  createdAt: Date;
+  approvedAt?: Date;
+  payments: PaymentDetailDto[];
+}
+
+export interface PaymentDetailDto {
+  id: string;
+  date: Date;
+  amountPaid: number;
+  interestCharged: number;
+  capitalPayment: number;
+  remainingBalance: number;
+}
 
 @Injectable()
-export class LoanService implements RequestLoanPort {
+export class LoanService {
+  private readonly logger = new Logger(LoanService.name);
+
   constructor(
-    private readonly loanRepository: LoanRepositoryPort,
-    private readonly paymentRepository: PaymentRepositoryPort,
-    private readonly userExternal: UserExternalPort,
+    @InjectRepository(Loan)
+    private readonly loanRepository: Repository<Loan>,
+    @InjectRepository(Payment)
+    private readonly paymentRepository: Repository<Payment>,
   ) {}
 
-  async requestLoan(loanData: { userId: string; amount: number; typeId: string }): Promise<Loan> {
-    const user = await this.userExternal.getUser(loanData.userId);
-    if (!user || user.role !== 'client') throw new Error('Invalid user');
+  /**
+   * ✅ NUEVO: Obtiene el balance completo de préstamos de un usuario
+   */
+  async getLoanBalance(userId: string): Promise<LoanBalanceDto> {
+    this.logger.log(`📊 Obteniendo balance para usuario: ${userId}`);
 
-    const type = loanData.typeId === 'monthly_interest' ? LoanType.MONTHLY_INTEREST : LoanType.FIXED_INSTALLMENTS;
+    // Obtener todos los préstamos del usuario con sus pagos
+    const loans = await this.loanRepository.find({
+      where: { userId },
+      relations: ['payments'],
+      order: { createdAt: 'DESC' },
+    });
 
-    const loan = new Loan(
-      `${Date.now()}-${Math.floor(Math.random() * 10000)}`,
-      loanData.userId,
-      loanData.amount,
-      0, // interestRate will be set on approval
-      'solicitud',
-      type
-    );
+    if (loans.length === 0) {
+      this.logger.warn(`Usuario ${userId} no tiene préstamos`);
+      return {
+        userId,
+        totalLoans: 0,
+        activeLoans: 0,
+        totalBorrowed: 0,
+        totalPaid: 0,
+        totalPending: 0,
+        loans: [],
+      };
+    }
 
-    return this.loanRepository.save(loan);
+    // Calcular totales
+    let totalBorrowed = 0;
+    let totalPaid = 0;
+    let totalPending = 0;
+    let activeLoans = 0;
+
+    const loanDetails: LoanDetailDto[] = loans.map((loan) => {
+      const loanAmount = Number(loan.amount);
+      const loanPending = Number(loan.remainingBalance);
+      
+      // Sumar al total prestado
+      totalBorrowed += loanAmount;
+      totalPending += loanPending;
+
+      // Calcular total pagado en este préstamo
+      const loanTotalPaid = loan.payments.reduce(
+        (sum, payment) => sum + Number(payment.capitalPayment),
+        0,
+      );
+      totalPaid += loanTotalPaid;
+
+      // Contar préstamos activos
+      if (loan.status === 'activo' || loan.status === 'aprobado') {
+        activeLoans++;
+      }
+
+      // Mapear pagos
+      const paymentDetails: PaymentDetailDto[] = loan.payments.map((payment) => ({
+        id: payment.id,
+        date: payment.date,
+        amountPaid: Number(payment.amountPaid),
+        interestCharged: Number(payment.interestCharged),
+        capitalPayment: Number(payment.capitalPayment),
+        remainingBalance: Number(payment.remainingBalance),
+      }));
+
+      return {
+        id: loan.id,
+        amount: loanAmount,
+        interestRate: Number(loan.interestRate),
+        status: loan.status,
+        type: loan.type,
+        remainingBalance: loanPending,
+        totalPaid: loanTotalPaid,
+        createdAt: loan.createdAt,
+        approvedAt: loan.approvedAt,
+        payments: paymentDetails,
+      };
+    });
+
+    this.logger.log(`✅ Balance calculado - Prestado: ${totalBorrowed}, Pagado: ${totalPaid}, Pendiente: ${totalPending}`);
+
+    return {
+      userId,
+      totalLoans: loans.length,
+      activeLoans,
+      totalBorrowed,
+      totalPaid,
+      totalPending,
+      loans: loanDetails,
+    };
   }
 
-  async approveLoan(loanId: string, approvalData: { interestRate: number; termMonths?: number; installmentValue?: number; paymentFrequency?: string }): Promise<Loan> {
-    const loan = await this.loanRepository.findById(loanId);
-    if (!loan || loan.status !== 'pendiente_aprobacion') throw new Error('Loan not found or not pending approval');
+  /**
+   * Solicita un nuevo préstamo
+   */
+  async requestLoan(loanData: {
+    userId: string;
+    amount: number;
+    typeId: string;
+  }): Promise<Loan> {
+    this.logger.log(`🆕 Solicitando préstamo para usuario: ${loanData.userId}`);
 
-    loan.status = 'aprobado';
+    const loan = this.loanRepository.create({
+      userId: loanData.userId,
+      amount: loanData.amount,
+      interestRate: 0,
+      status: 'solicitud',
+      type: loanData.typeId,
+      remainingBalance: loanData.amount,
+    });
+
+    return await this.loanRepository.save(loan);
+  }
+
+  /**
+   * Aprueba un préstamo
+   */
+  async approveLoan(
+    loanId: string,
+    approvalData: {
+      interestRate: number;
+      termMonths?: number;
+      installmentValue?: number;
+      paymentFrequency?: string;
+    },
+  ): Promise<Loan> {
+    const loan = await this.loanRepository.findOne({ where: { id: loanId } });
+
+    if (!loan) {
+      throw new NotFoundException(`Préstamo con ID ${loanId} no encontrado`);
+    }
+
+    if (loan.status !== 'solicitud' && loan.status !== 'pendiente_aprobacion') {
+      throw new BadRequestException('El préstamo no está en estado de aprobación');
+    }
+
+    loan.status = 'activo';
     loan.interestRate = approvalData.interestRate;
     loan.termMonths = approvalData.termMonths;
     loan.installmentValue = approvalData.installmentValue;
     loan.paymentFrequency = approvalData.paymentFrequency as any;
     loan.approvedAt = new Date();
 
-    return this.loanRepository.save(loan);
+    return await this.loanRepository.save(loan);
   }
 
-  async getLoanById(id: string): Promise<Loan | null> {
-    return this.loanRepository.findById(id);
-  }
-  async rejectLoan(loanId: string): Promise<Loan> {
-    const loan = await this.loanRepository.findById(loanId);
-    if (!loan || loan.status !== 'pendiente_aprobacion') throw new Error('Loan not found or not pending approval');
-
-    loan.status = 'rechazado';
-    return this.loanRepository.save(loan);
-  }
+  /**
+   * Registra un pago
+   */
   async makePayment(loanId: string, amount: number): Promise<Payment> {
-    const loan = await this.loanRepository.findById(loanId);
-    if (!loan || loan.status !== 'activo') throw new Error('Loan not found or not active');
+    const loan = await this.loanRepository.findOne({ where: { id: loanId } });
+
+    if (!loan) {
+      throw new NotFoundException(`Préstamo con ID ${loanId} no encontrado`);
+    }
+
+    if (loan.status !== 'activo') {
+      throw new BadRequestException('El préstamo no está activo');
+    }
 
     const interestCharged = loan.calculateInterest();
     let capitalPayment = amount - interestCharged;
-    if (capitalPayment < 0) capitalPayment = 0; // if amount < interest, all to interest
+    if (capitalPayment < 0) capitalPayment = 0;
 
-    if (capitalPayment > loan.remainingBalance) capitalPayment = loan.remainingBalance;
+    if (capitalPayment > Number(loan.remainingBalance)) {
+      capitalPayment = Number(loan.remainingBalance);
+    }
 
-    const remainingBalance = loan.remainingBalance - capitalPayment;
+    const remainingBalance = Number(loan.remainingBalance) - capitalPayment;
 
-    const payment = new Payment(
-      `${Date.now()}-${Math.floor(Math.random() * 10000)}`,
-      loanId,
-      new Date(),
-      amount,
+    const payment = this.paymentRepository.create({
+      loanId: loan.id,
+      amountPaid: amount,
       interestCharged,
       capitalPayment,
-      remainingBalance
-    );
+      remainingBalance,
+      date: new Date(),
+    });
 
     loan.remainingBalance = remainingBalance;
     if (remainingBalance <= 0) {
@@ -85,29 +232,61 @@ export class LoanService implements RequestLoanPort {
     }
 
     await this.loanRepository.save(loan);
-    return this.paymentRepository.save(payment);
+    return await this.paymentRepository.save(payment);
   }
 
-  async getBalance(userId: string): Promise<{ totalLoans: number; totalPaid: number }> {
-    const loans = await this.loanRepository.findAllByUser(userId);
-    const totalLoans = loans.reduce((sum, loan) => sum + loan.amount, 0);
-
-    const paymentsPromises = loans.map(loan => this.paymentRepository.findByLoanId(loan.id));
-    const paymentsArrays = await Promise.all(paymentsPromises);
-    const totalPaid = paymentsArrays.flat().reduce((sum, payment) => sum + payment.capitalPayment, 0);
-
-    return { totalLoans, totalPaid };
+  /**
+   * Obtiene un préstamo por ID
+   */
+  async getLoanById(id: string): Promise<Loan | null> {
+    return await this.loanRepository.findOne({
+      where: { id },
+      relations: ['payments'],
+    });
   }
 
-  async getPaymentsByLoan(loanId: string): Promise<Payment[]> {
-    return this.paymentRepository.findByLoanId(loanId);
-  }
-
+  /**
+   * Obtiene todos los préstamos de un usuario
+   */
   async getLoansByUser(userId: string): Promise<Loan[]> {
-    return this.loanRepository.findAllByUser(userId);
+    return await this.loanRepository.find({
+      where: { userId },
+      relations: ['payments'],
+      order: { createdAt: 'DESC' },
+    });
   }
 
+  /**
+   * Obtiene todos los préstamos (para admin)
+   */
   async getAllLoans(): Promise<Loan[]> {
-    return this.loanRepository.findAll();
+    return await this.loanRepository.find({
+      relations: ['payments'],
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  /**
+   * Rechaza un préstamo
+   */
+  async rejectLoan(loanId: string): Promise<Loan> {
+    const loan = await this.loanRepository.findOne({ where: { id: loanId } });
+
+    if (!loan) {
+      throw new NotFoundException(`Préstamo con ID ${loanId} no encontrado`);
+    }
+
+    loan.status = 'rechazado';
+    return await this.loanRepository.save(loan);
+  }
+
+  /**
+   * Obtiene los pagos de un préstamo
+   */
+  async getPaymentsByLoan(loanId: string): Promise<Payment[]> {
+    return await this.paymentRepository.find({
+      where: { loanId },
+      order: { date: 'DESC' },
+    });
   }
 }
