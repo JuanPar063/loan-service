@@ -147,7 +147,7 @@ export class LoanService {
       userId: loanData.userId,
       amount: loanData.amount,
       interestRate: 0,
-      status: 'solicitud',
+      status: 'pendiente_aprobacion',
       type: loanData.typeId,
       remainingBalance: loanData.amount,
     });
