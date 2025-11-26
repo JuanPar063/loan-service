@@ -51,12 +51,11 @@ export class LoanService {
   ) {}
 
   /**
-   * ✅ NUEVO: Obtiene el balance completo de préstamos de un usuario
+   * ✅ Obtiene el balance completo de préstamos de un usuario
    */
   async getLoanBalance(userId: string): Promise<LoanBalanceDto> {
     this.logger.log(`📊 Obteniendo balance para usuario: ${userId}`);
 
-    // Obtener todos los préstamos del usuario con sus pagos
     const loans = await this.loanRepository.find({
       where: { userId },
       relations: ['payments'],
@@ -76,7 +75,6 @@ export class LoanService {
       };
     }
 
-    // Calcular totales
     let totalBorrowed = 0;
     let totalPaid = 0;
     let totalPending = 0;
@@ -86,23 +84,19 @@ export class LoanService {
       const loanAmount = Number(loan.amount);
       const loanPending = Number(loan.remainingBalance);
       
-      // Sumar al total prestado
       totalBorrowed += loanAmount;
       totalPending += loanPending;
 
-      // Calcular total pagado en este préstamo
       const loanTotalPaid = loan.payments.reduce(
         (sum, payment) => sum + Number(payment.capitalPayment),
         0,
       );
       totalPaid += loanTotalPaid;
 
-      // Contar préstamos activos
       if (loan.status === 'activo' || loan.status === 'aprobado') {
         activeLoans++;
       }
 
-      // Mapear pagos
       const paymentDetails: PaymentDetailDto[] = loan.payments.map((payment) => ({
         id: payment.id,
         date: payment.date,
@@ -194,7 +188,76 @@ export class LoanService {
   }
 
   /**
-   * Registra un pago
+   * ✅ NUEVO: Registra un pago manual desde el admin dashboard
+   */
+  async makeManualPayment(
+    loanId: string,
+    paymentData: { capitalPayment: number; paymentDate: string },
+  ): Promise<Payment> {
+    const loan = await this.loanRepository.findOne({ where: { id: loanId } });
+
+    if (!loan) {
+      throw new NotFoundException(`Préstamo con ID ${loanId} no encontrado`);
+    }
+
+    if (loan.status !== 'activo' && loan.status !== 'aprobado') {
+      throw new BadRequestException('El préstamo no está activo');
+    }
+
+    const capitalPayment = Number(paymentData.capitalPayment);
+    const currentBalance = Number(loan.remainingBalance);
+
+    // Validar que el pago a capital no exceda el saldo pendiente
+    if (capitalPayment > currentBalance) {
+      throw new BadRequestException(
+        `El pago a capital (${capitalPayment}) no puede ser mayor al saldo pendiente (${currentBalance})`
+      );
+    }
+
+    if (capitalPayment <= 0) {
+      throw new BadRequestException('El pago a capital debe ser mayor a cero');
+    }
+
+    // Calcular interés sobre el saldo actual
+    const interestCharged = loan.calculateInterest();
+    
+    // Calcular nuevo saldo
+    const remainingBalance = currentBalance - capitalPayment;
+
+    // Monto total del pago (capital + interés)
+    const amountPaid = capitalPayment + interestCharged;
+
+    this.logger.log(`💰 Registrando pago manual - Préstamo: ${loanId}, Capital: ${capitalPayment}, Interés: ${interestCharged}`);
+
+    // Crear el registro de pago
+    const payment = this.paymentRepository.create({
+      loanId: loan.id,
+      amountPaid,
+      interestCharged,
+      capitalPayment,
+      remainingBalance,
+      date: new Date(paymentData.paymentDate), // Fecha proporcionada por el admin
+    });
+
+    // Actualizar el préstamo
+    loan.remainingBalance = remainingBalance;
+    
+    // Si se pagó todo el capital, marcar como pagado
+    if (remainingBalance <= 0) {
+      loan.status = 'pagado';
+      this.logger.log(`✅ Préstamo ${loanId} completamente pagado`);
+    }
+
+    await this.loanRepository.save(loan);
+    const savedPayment = await this.paymentRepository.save(payment);
+
+    this.logger.log(`✅ Pago registrado exitosamente - ID: ${savedPayment.id}`);
+
+    return savedPayment;
+  }
+
+  /**
+   * Registra un pago (automático)
    */
   async makePayment(loanId: string, amount: number): Promise<Payment> {
     const loan = await this.loanRepository.findOne({ where: { id: loanId } });

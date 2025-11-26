@@ -5,6 +5,8 @@ import { LoanService } from '../../../application/services/loan.service';
 import { RequestLoanDto } from '../../dto/request-loan.dto';
 import { ApproveLoanDto } from '../../dto/approve-loan.dto';
 import { MakePaymentDto } from '../../dto/make-payment.dto';
+import { ManualPaymentDto } from '../../dto/manual-payment.dto';
+
 import {
   ApiTags,
   ApiOperation,
@@ -21,7 +23,7 @@ export class LoanController {
   constructor(private readonly loanService: LoanService) {}
 
   /**
-   * ✅ NUEVO: Obtiene el balance completo de préstamos del usuario
+   * ✅ Obtiene el balance completo de préstamos del usuario
    */
   @Get('balance/:userId')
   @HttpCode(HttpStatus.OK)
@@ -97,6 +99,22 @@ export class LoanController {
   @ApiParam({ name: 'id', type: String, example: 'loan_001' })
   async approve(@Param('id') id: string, @Body() dto: ApproveLoanDto) {
     return this.loanService.approveLoan(id, dto);
+  }
+
+  /**
+   * ✅ NUEVO: Registrar pago manual desde admin dashboard
+   */
+  @Post(':id/payments/manual')
+  @ApiOperation({ 
+    summary: 'Registrar pago manual (Admin)',
+    description: 'Permite al admin registrar un pago con fecha personalizada y monto a capital específico'
+  })
+  @ApiParam({ name: 'id', type: String, example: 'loan_001' })
+  @ApiCreatedResponse({
+    description: 'Pago registrado exitosamente',
+  })
+  async makeManualPayment(@Param('id') id: string, @Body() dto: ManualPaymentDto) {
+    return this.loanService.makeManualPayment(id, dto);
   }
 
   @Post(':id/payments')
