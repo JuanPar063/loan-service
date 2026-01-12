@@ -7,6 +7,7 @@ import { LoanService } from './application/services/loan.service';
 import { LoanController } from './infrastructure/adapters/in/loan.controller';
 import { Loan } from './domain/entities/loan.entity';
 import { Payment } from './domain/entities/payment.entity';
+import { ProfileExternalAdapter } from 'infrastructure/adapters/in/ProfileExteralHTTP';
 
 @Module({
   imports: [
@@ -27,7 +28,7 @@ import { Payment } from './domain/entities/payment.entity';
     HttpModule,
   ],
   controllers: [LoanController],
-  providers: [LoanService],
+  providers: [LoanService, ProfileExternalAdapter],
   exports: [LoanService],
 })
 export class AppModule {}

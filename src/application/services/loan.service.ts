@@ -1,10 +1,21 @@
 // loan-service/src/application/services/loan.service.ts
 
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Loan } from '../../domain/entities/loan.entity';
 import { Payment } from '../../domain/entities/payment.entity';
+import { Profiler } from 'inspector/promises';
+import { ProfileExternalAdapter } from '../../infrastructure/adapters/in/ProfileExteralHTTP';
+
+
+export interface EnrichedLoanDto extends Omit<Loan, 'calculateInterest' | 'isMonthlyInterestType' | 'isFixedInstallmentsType'> {
+  user: {
+    name: string;
+    document: string;
+    phone: any;
+  };
+}
 
 export interface LoanBalanceDto {
   userId: string;
@@ -30,6 +41,7 @@ export interface LoanDetailDto {
   payments: PaymentDetailDto[];
 }
 
+
 export interface PaymentDetailDto {
   id: string;
   date: Date;
@@ -48,6 +60,8 @@ export class LoanService {
     private readonly loanRepository: Repository<Loan>,
     @InjectRepository(Payment)
     private readonly paymentRepository: Repository<Payment>,
+    private readonly profileExternalAdapter: ProfileExternalAdapter,
+
   ) {}
 
   /**
@@ -133,10 +147,111 @@ export class LoanService {
     };
   }
 
+// ✅ Fragmento del método getPendingLoans mejorado
+
+async getPendingLoans(
+  page: number,
+  limit: number,
+): Promise<{
+  data: EnrichedLoanDto[];
+  total: number;
+  page: number;
+  limit: number;
+}> {
+  this.logger.log(`📋 Obteniendo préstamos pendientes - Página: ${page}, Límite: ${limit}`);
+
+  const [loans, total] = await this.loanRepository.findAndCount({
+    where: { status: 'pendiente_aprobacion' },
+    order: { createdAt: 'DESC' },
+    skip: (page - 1) * limit,
+    take: limit,
+  });
+
+  this.logger.log(`📊 Préstamos pendientes encontrados: ${total}`);
+
+  // Enriquecer con datos del usuario
+  const enrichedLoans: EnrichedLoanDto[] = await Promise.all(
+    loans.map(async (loan) => {
+      try {
+        this.logger.debug(`🔍 Obteniendo perfil para usuario: ${loan.userId}`);
+        
+        const profile = await this.profileExternalAdapter.getProfile(loan.userId);
+        
+        this.logger.debug(`✅ Perfil obtenido: ${profile.first_name} ${profile.last_name}`);
+
+        return {
+          ...loan,
+          user: {
+            name: `${profile.first_name} ${profile.last_name}`,
+            document: `${profile.document_type} ${profile.document_number}`,
+            phone: profile.phone,
+          },
+        };
+      } catch (error) {
+        this.logger.error(`❌ Error obteniendo perfil para loan ${loan.id}:`, error);
+        
+        // Retornar datos por defecto si falla
+        return {
+          ...loan,
+          user: {
+            name: 'Usuario Desconocido',
+            document: 'N/A',
+            phone: 'N/A',
+          },
+        };
+      }
+    }),
+  );
+
+  this.logger.log(`✅ ${enrichedLoans.length} préstamos enriquecidos con datos de usuario`);
+
+  return {
+    data: enrichedLoans,
+    total,
+    page,
+    limit,
+  };
+}
+
+async searchPendingByDocument(documentNumber: string): Promise<EnrichedLoanDto[]> {
+  this.logger.log(`🔍 Buscando préstamos pendientes por documento: ${documentNumber}`);
+
+  // Buscar usuario por documento
+  const profile = await this.profileExternalAdapter.getProfileByDocumentNumber(
+    documentNumber,
+  );
+  
+  if (!profile) {
+    throw new NotFoundException(`Usuario con documento ${documentNumber} no encontrado`);
+  }
+
+  this.logger.log(`✅ Usuario encontrado: ${profile.first_name} ${profile.last_name} (${profile.id_user})`);
+
+  // Buscar préstamos pendientes de ese usuario
+  const loans = await this.loanRepository.find({
+    where: {
+      userId: profile.id_user,
+      status: 'pendiente_aprobacion',
+    },
+    order: { createdAt: 'DESC' },
+  });
+
+  this.logger.log(`📊 Préstamos pendientes encontrados: ${loans.length}`);
+
+  // Enriquecer con datos del usuario
+  return loans.map(loan => ({
+    ...loan,
+    user: {
+      name: `${profile.first_name} ${profile.last_name}`,
+      document: `${profile.document_type} ${profile.document_number}`,
+      phone: profile.phone,
+    },
+  }));
+}
   /**
    * Solicita un nuevo préstamo
    */
-  async requestLoan(loanData: {
+async requestLoan(loanData: {
     userId: string;
     amount: number;
     typeId: string;
