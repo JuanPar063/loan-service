@@ -1,30 +1,61 @@
 import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { Loan } from '../../../../domain/entities/loan.entity';
-import { LoanRepositoryPort } from '../../../../domain/ports/out/loan-repository.port';
 
 @Injectable()
-export class InMemoryLoanRepository implements LoanRepositoryPort {
-  private store: Loan[] = [];
-
-  async save(loan: Loan): Promise<Loan> {
-    const existingIndex = this.store.findIndex(l => l.id === loan.id);
-    if (existingIndex >= 0) {
-      this.store[existingIndex] = loan;
-    } else {
-      this.store.push(loan);
-    }
-    return loan;
-  }
+export class LoanRepository {
+  constructor(
+    @InjectRepository(Loan)
+    private readonly repo: Repository<Loan>,
+  ) {}
 
   async findById(id: string): Promise<Loan | null> {
-    return this.store.find(l => l.id === id) ?? null;
+    return this.repo.findOne({ 
+      where: { id },
+      relations: ['payments'],
+    });
   }
 
   async findAllByUser(userId: string): Promise<Loan[]> {
-    return this.store.filter(l => l.userId === userId);
+    return this.repo.find({ where: { userId } });
+  }
+
+  async findByUserIdWithPayments(userId: string): Promise<Loan[]> {
+    return this.repo.find({
+      where: { userId },
+      relations: ['payments'],
+      order: { createdAt: 'DESC' },
+    });
   }
 
   async findAll(): Promise<Loan[]> {
-    return [...this.store];
+    return this.repo.find();
+  }
+
+  async findAllWithPayments(): Promise<Loan[]> {
+    return this.repo.find({
+      relations: ['payments'],
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  async findPending(page: number, limit: number): Promise<{ loans: Loan[]; total: number }> {
+    const [loans, total] = await this.repo.findAndCount({
+      where: { status: 'pendiente_aprobacion' },
+      relations: ['payments'],
+      skip: (page - 1) * limit,
+      take: limit,
+      order: { createdAt: 'DESC' },
+    });
+    return { loans, total };
+  }
+
+  async save(loan: Loan): Promise<Loan> {
+    return this.repo.save(loan);
+  }
+
+  async update(id: string, data: Partial<Loan>): Promise<void> {
+    await this.repo.update(id, data);
   }
 }

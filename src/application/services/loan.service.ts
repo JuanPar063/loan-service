@@ -51,6 +51,31 @@ export interface PaymentDetailDto {
   remainingBalance: number;
 }
 
+export interface EnrichedLoanForAnalysis {
+  id: string;
+  user_id: string;
+  amount: number;
+  approved_amount: number;
+  interest_rate: number;
+  term_months: number;
+  status: string;
+  remainingBalance: number;
+  installmentValue: number;
+  totalPaid: number;
+  payments: EnrichedPaymentForAnalysis[];
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface EnrichedPaymentForAnalysis {
+  id: string;
+  loan_id: string;
+  amount: number;
+  date: string;      // Fecha en que se realizó el pago (ISO)
+  dueDate: string;   // Fecha límite del pago (ISO)
+  status: string;
+}
+
 @Injectable()
 export class LoanService {
   private readonly logger = new Logger(LoanService.name);
@@ -212,6 +237,90 @@ async getPendingLoans(
     limit,
   };
 }
+
+// ...existing code (imports y constructor)...
+
+async getLoansForCreditAnalysis(userId: string): Promise<EnrichedLoanForAnalysis[]> {
+  // Usar el repositorio de TypeORM directamente
+  const loans = await this.loanRepository.find({
+    where: { userId },
+    relations: ['payments'],
+    order: { createdAt: 'DESC' },
+  });
+
+  return loans.map((loan) => {
+    // Calcular total pagado
+    const totalPaid = (loan.payments || []).reduce(
+      (sum, p) => sum + Number(p.capitalPayment || 0),
+      0,
+    );
+    
+    const approvedAmount = Number(loan.amount || 0);
+    const interestRate = Number(loan.interestRate || 0);
+    const termMonths = Number(loan.termMonths || 1);
+
+    // Calcular interés total y monto total a pagar
+    const totalInterest = approvedAmount * (interestRate / 100) * (termMonths / 12);
+    const totalToPay = approvedAmount + totalInterest;
+    const remainingBalance = Number(loan.remainingBalance || 0);
+
+    // Calcular valor de cuota mensual
+    const installmentValue = Number(loan.installmentValue) || (termMonths > 0 ? totalToPay / termMonths : 0);
+
+    // Enriquecer pagos con fecha de vencimiento
+    const enrichedPayments = this.enrichPaymentsWithDueDate(loan);
+
+    return {
+      id: loan.id,
+      user_id: loan.userId,
+      amount: Number(loan.amount),
+      approved_amount: approvedAmount,
+      interest_rate: interestRate,
+      term_months: termMonths,
+      status: loan.status,
+      remainingBalance: Math.round(remainingBalance * 100) / 100,
+      installmentValue: Math.round(installmentValue * 100) / 100,
+      totalPaid: Math.round(totalPaid * 100) / 100,
+      payments: enrichedPayments,
+      created_at: loan.createdAt,
+      updated_at: loan.updatedAt,
+    };
+  });
+}
+
+/**
+ * Enriquece los pagos con la fecha de vencimiento calculada
+ */
+private enrichPaymentsWithDueDate(loan: Loan): EnrichedPaymentForAnalysis[] {
+  const payments = loan.payments || [];
+  const loanStartDate = new Date(loan.createdAt);
+  const termMonths = Number(loan.termMonths || 12);
+
+  // Generar fechas de vencimiento para cada mes
+  const dueDates: Date[] = [];
+  for (let i = 1; i <= termMonths; i++) {
+    const dueDate = new Date(loanStartDate);
+    dueDate.setMonth(dueDate.getMonth() + i);
+    dueDates.push(dueDate);
+  }
+
+  // Asignar fecha de vencimiento a cada pago
+  return payments.map((payment, index) => {
+    const paymentDate = new Date(payment.date || payment.createdAt);
+    const dueDate = dueDates[index] || dueDates[dueDates.length - 1] || paymentDate;
+
+    return {
+      id: payment.id,
+      loan_id: loan.id,
+      amount: Number(payment.amountPaid || 0),
+      date: paymentDate.toISOString(),
+      dueDate: dueDate.toISOString(),
+      status: 'completed',
+    };
+  });
+}
+
+// ...existing code...
 
 async searchPendingByDocument(documentNumber: string): Promise<EnrichedLoanDto[]> {
   this.logger.log(`🔍 Buscando préstamos pendientes por documento: ${documentNumber}`);

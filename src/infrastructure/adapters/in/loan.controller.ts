@@ -65,6 +65,18 @@ export class LoanController {
     return this.loanService.getLoansByUser(userId);
   }
 
+  /**
+   * ✅ NUEVO: Endpoint para admin-service
+   * GET /loans/user/:userId
+   */
+@Get('user/:userId')
+@ApiOperation({ summary: 'Obtener préstamos enriquecidos por userId (para análisis crediticio)' })
+@ApiParam({ name: 'userId', type: String, example: 'uuid-del-usuario' })
+async getLoansByUser(@Param('userId') userId: string) {
+  const loans = await this.loanService.getLoansForCreditAnalysis(userId);
+  return { message: 'Loans retrieved successfully', data: loans };
+}
+
   // ===================== ACCIONES =====================
 
   @Post('request')
