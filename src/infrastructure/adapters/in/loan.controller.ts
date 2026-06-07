@@ -10,6 +10,7 @@ import {
   HttpCode,
   HttpStatus,
   Query,
+  Headers,
 } from '@nestjs/common';
 import { LoanService } from '../../../application/services/loan.service';
 import { RequestLoanDto } from '../../dto/request-loan.dto';
@@ -22,6 +23,7 @@ import {
   ApiParam,
   ApiBearerAuth,
   ApiQuery,
+  ApiHeader,
 } from '@nestjs/swagger';
 
 @ApiTags('loans')
@@ -99,14 +101,32 @@ async getLoansByUser(@Param('userId') userId: string) {
 
   @Post(':id/payments/manual')
   @ApiOperation({ summary: 'Registrar pago manual (Admin)' })
-  async makeManualPayment(@Param('id') id: string, @Body() dto: ManualPaymentDto) {
-    return this.loanService.makeManualPayment(id, dto);
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description: 'Clave de idempotencia para evitar pagos duplicados en reintentos.',
+  })
+  async makeManualPayment(
+    @Param('id') id: string,
+    @Body() dto: ManualPaymentDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.loanService.makeManualPayment(id, dto, idempotencyKey);
   }
 
   @Post(':id/payments')
   @ApiOperation({ summary: 'Registrar un pago de préstamo' })
-  async makePayment(@Param('id') id: string, @Body() dto: MakePaymentDto) {
-    return this.loanService.makePayment(id, dto.amount);
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: false,
+    description: 'Clave de idempotencia para evitar pagos duplicados en reintentos.',
+  })
+  async makePayment(
+    @Param('id') id: string,
+    @Body() dto: MakePaymentDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.loanService.makePayment(id, dto.amount, idempotencyKey);
   }
 
   // ===================== CONSULTAS GENERALES =====================
