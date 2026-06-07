@@ -1,5 +1,6 @@
-import { IsString, IsNumber, IsPositive, IsIn } from 'class-validator';
+import { IsString, IsNumber, IsPositive, IsEnum } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
+import { LoanType } from '../../domain/entities/loan.entity';
 
 export class RequestLoanDto {
   @ApiProperty({
@@ -19,10 +20,9 @@ export class RequestLoanDto {
 
   @ApiProperty({
     description: 'Tipo de préstamo',
-    example: 'monthly_interest',
-    enum: ['monthly_interest', 'fixed_installments'],
+    example: LoanType.MONTHLY_INTEREST,
+    enum: LoanType,
   })
-  @IsString()
-  @IsIn(['monthly_interest', 'fixed_installments'])
-  typeId: string;
+  @IsEnum(LoanType)
+  typeId: LoanType;
 }

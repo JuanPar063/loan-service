@@ -1,15 +1,15 @@
 // loan-service/src/application/services/loan.service.ts
 
-import { Injectable, NotFoundException, BadRequestException, Logger, Inject } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ConflictException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { Loan } from '../../domain/entities/loan.entity';
+import { Loan, LoanStatus, LoanType } from '../../domain/entities/loan.entity';
 import { Payment } from '../../domain/entities/payment.entity';
-import { Profiler } from 'inspector/promises';
-import { ProfileExternalAdapter } from '../../infrastructure/adapters/in/ProfileExteralHTTP';
+import { PaymentIdempotency } from '../../domain/entities/payment-idempotency.entity';
+import { ProfileExternalAdapter } from '../../infrastructure/adapters/in/ProfileExternalHTTP';
 
 
-export interface EnrichedLoanDto extends Omit<Loan, 'calculateInterest' | 'isMonthlyInterestType' | 'isFixedInstallmentsType'> {
+export interface EnrichedLoanDto extends Omit<Loan, 'calculateInterest' | 'isMonthlyInterestType' | 'isFixedInstallmentsType' | 'canTransitionTo'> {
   user: {
     name: string;
     document: string;
@@ -85,9 +85,58 @@ export class LoanService {
     private readonly loanRepository: Repository<Loan>,
     @InjectRepository(Payment)
     private readonly paymentRepository: Repository<Payment>,
+    @InjectRepository(PaymentIdempotency)
+    private readonly idempotencyRepository: Repository<PaymentIdempotency>,
     private readonly profileExternalAdapter: ProfileExternalAdapter,
-
   ) {}
+
+  /** Cambia el estado del préstamo validando la máquina de estados. */
+  private transitionStatus(loan: Loan, next: LoanStatus): void {
+    if (loan.status === next) return;
+    if (!loan.canTransitionTo(next)) {
+      throw new BadRequestException(
+        `Transición de estado inválida: '${loan.status}' → '${next}'.`,
+      );
+    }
+    loan.status = next;
+  }
+
+  /**
+   * Devuelve el pago ya registrado para una clave de idempotencia, si existe.
+   * Permite que reintentos con el mismo Idempotency-Key no dupliquen pagos.
+   */
+  private async findIdempotentPayment(
+    loanId: string,
+    key?: string,
+  ): Promise<Payment | null> {
+    if (!key) return null;
+    const record = await this.idempotencyRepository.findOne({
+      where: { loanId, idempotencyKey: key },
+    });
+    if (!record) return null;
+    this.logger.warn(
+      `↩️ Pago idempotente reutilizado (loan ${loanId}, key ${key}) → payment ${record.paymentId}`,
+    );
+    return this.paymentRepository.findOne({ where: { id: record.paymentId } });
+  }
+
+  /** Persiste el vínculo (loanId, key) → paymentId para futuros reintentos. */
+  private async recordIdempotency(
+    loanId: string,
+    key: string | undefined,
+    paymentId: string,
+  ): Promise<void> {
+    if (!key) return;
+    try {
+      await this.idempotencyRepository.save(
+        this.idempotencyRepository.create({ loanId, idempotencyKey: key, paymentId }),
+      );
+    } catch (err) {
+      // Una violación de unicidad aquí significa que otro request concurrente ya
+      // registró la clave; no es fatal para la respuesta actual.
+      this.logger.warn(`No se pudo registrar idempotencia (loan ${loanId}, key ${key})`);
+    }
+  }
 
   /**
    * ✅ Obtiene el balance completo de préstamos de un usuario
@@ -259,8 +308,11 @@ async getLoansForCreditAnalysis(userId: string): Promise<EnrichedLoanForAnalysis
     const interestRate = Number(loan.interestRate || 0);
     const termMonths = Number(loan.termMonths || 1);
 
-    // Calcular interés total y monto total a pagar
-    const totalInterest = approvedAmount * (interestRate / 100) * (termMonths / 12);
+    // Calcular interés total y monto total a pagar.
+    // interestRate es MENSUAL (consistente con Loan.calculateInterest()), por lo que
+    // el interés simple total del plazo es: principal * tasaMensual * nº de meses.
+    // (Antes usaba termMonths/12, lo que asumía erróneamente una tasa anual.)
+    const totalInterest = approvedAmount * (interestRate / 100) * termMonths;
     const totalToPay = approvedAmount + totalInterest;
     const remainingBalance = Number(loan.remainingBalance || 0);
 
@@ -363,9 +415,12 @@ async searchPendingByDocument(documentNumber: string): Promise<EnrichedLoanDto[]
 async requestLoan(loanData: {
     userId: string;
     amount: number;
-    typeId: string;
+    typeId: LoanType;
   }): Promise<Loan> {
     this.logger.log(`🆕 Solicitando préstamo para usuario: ${loanData.userId}`);
+
+    // Chequeo de capacidad de endeudamiento ANTES de crear la solicitud.
+    await this.assertWithinCapacity(loanData.userId, loanData.amount);
 
     const loan = this.loanRepository.create({
       userId: loanData.userId,
@@ -377,6 +432,57 @@ async requestLoan(loanData: {
     });
 
     return await this.loanRepository.save(loan);
+  }
+
+  /**
+   * Valida que el préstamo solicitado no exceda una capacidad de endeudamiento
+   * estimada (heurística: múltiplo del ingreso mensual menos la exposición actual).
+   * Es un chequeo previo básico; el análisis completo vive en admin-service.
+   */
+  private async assertWithinCapacity(
+    userId: string,
+    requestedAmount: number,
+  ): Promise<void> {
+    const activeLoans = await this.loanRepository.find({
+      where: [
+        { userId, status: 'activo' },
+        { userId, status: 'aprobado' },
+        { userId, status: 'pendiente_aprobacion' },
+      ],
+    });
+    const currentExposure = activeLoans.reduce(
+      (sum, l) => sum + Number(l.remainingBalance || 0),
+      0,
+    );
+
+    let monthlyIncome = 0;
+    try {
+      const profile = await this.profileExternalAdapter.getProfile(userId);
+      if (profile && !profile.degraded) {
+        monthlyIncome = Number(profile.monthly_income || 0);
+      }
+    } catch {
+      monthlyIncome = 0;
+    }
+
+    if (!monthlyIncome) {
+      this.logger.warn(
+        `No se pudo evaluar la capacidad de ${userId} (ingreso desconocido); se permite la solicitud.`,
+      );
+      return;
+    }
+
+    const multiplier = parseInt(process.env.LOAN_MAX_INCOME_MULTIPLIER || '12', 10);
+    const maxExposure = monthlyIncome * multiplier;
+    const projected = currentExposure + Number(requestedAmount);
+
+    if (projected > maxExposure) {
+      throw new ConflictException(
+        `La solicitud supera tu capacidad de endeudamiento estimada. ` +
+          `Exposición proyectada: ${projected.toFixed(2)}, máximo recomendado: ${maxExposure.toFixed(2)} ` +
+          `(${multiplier}× ingreso mensual).`,
+      );
+    }
   }
 
   /**
@@ -401,7 +507,7 @@ async requestLoan(loanData: {
       throw new BadRequestException('El préstamo no está en estado de aprobación');
     }
 
-    loan.status = 'activo';
+    this.transitionStatus(loan, 'activo');
     loan.interestRate = approvalData.interestRate;
     loan.termMonths = approvalData.termMonths;
     loan.installmentValue = approvalData.installmentValue;
@@ -417,7 +523,11 @@ async requestLoan(loanData: {
   async makeManualPayment(
     loanId: string,
     paymentData: { capitalPayment: number; paymentDate: string },
+    idempotencyKey?: string,
   ): Promise<Payment> {
+    const existing = await this.findIdempotentPayment(loanId, idempotencyKey);
+    if (existing) return existing;
+
     const loan = await this.loanRepository.findOne({ where: { id: loanId } });
 
     if (!loan) {
@@ -465,15 +575,16 @@ async requestLoan(loanData: {
 
     // Actualizar el préstamo
     loan.remainingBalance = remainingBalance;
-    
+
     // Si se pagó todo el capital, marcar como pagado
     if (remainingBalance <= 0) {
-      loan.status = 'pagado';
+      this.transitionStatus(loan, 'pagado');
       this.logger.log(`✅ Préstamo ${loanId} completamente pagado`);
     }
 
     await this.loanRepository.save(loan);
     const savedPayment = await this.paymentRepository.save(payment);
+    await this.recordIdempotency(loanId, idempotencyKey, savedPayment.id);
 
     this.logger.log(`✅ Pago registrado exitosamente - ID: ${savedPayment.id}`);
 
@@ -483,7 +594,10 @@ async requestLoan(loanData: {
   /**
    * Registra un pago (automático)
    */
-  async makePayment(loanId: string, amount: number): Promise<Payment> {
+  async makePayment(loanId: string, amount: number, idempotencyKey?: string): Promise<Payment> {
+    const existing = await this.findIdempotentPayment(loanId, idempotencyKey);
+    if (existing) return existing;
+
     const loan = await this.loanRepository.findOne({ where: { id: loanId } });
 
     if (!loan) {
@@ -515,11 +629,13 @@ async requestLoan(loanData: {
 
     loan.remainingBalance = remainingBalance;
     if (remainingBalance <= 0) {
-      loan.status = 'pagado';
+      this.transitionStatus(loan, 'pagado');
     }
 
     await this.loanRepository.save(loan);
-    return await this.paymentRepository.save(payment);
+    const savedPayment = await this.paymentRepository.save(payment);
+    await this.recordIdempotency(loanId, idempotencyKey, savedPayment.id);
+    return savedPayment;
   }
 
   /**
@@ -563,7 +679,7 @@ async requestLoan(loanData: {
       throw new NotFoundException(`Préstamo con ID ${loanId} no encontrado`);
     }
 
-    loan.status = 'rechazado';
+    this.transitionStatus(loan, 'rechazado');
     return await this.loanRepository.save(loan);
   }
 

@@ -11,5 +11,6 @@ export const typeOrmConfig: TypeOrmModuleOptions = {
   password: process.env.DATABASE_PASSWORD || 'password',
   database: process.env.DATABASE_NAME || 'mydb',
   entities: [User],
-  synchronize: true,
+  // En producción NO sincronizar el esquema automáticamente (usar migraciones).
+  synchronize: process.env.NODE_ENV !== 'production',
 };
