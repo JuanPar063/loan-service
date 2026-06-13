@@ -522,7 +522,7 @@ async requestLoan(loanData: {
    */
   async makeManualPayment(
     loanId: string,
-    paymentData: { capitalPayment: number; paymentDate: string },
+    paymentData: { amount: number; paymentDate: string },
     idempotencyKey?: string,
   ): Promise<Payment> {
     const existing = await this.findIdempotentPayment(loanId, idempotencyKey);
@@ -538,30 +538,34 @@ async requestLoan(loanData: {
       throw new BadRequestException('El préstamo no está activo');
     }
 
-    const capitalPayment = Number(paymentData.capitalPayment);
-    const currentBalance = Number(loan.remainingBalance);
+    // `amount` es el TOTAL que paga el cliente. Asignación tipo entidad prestadora
+    // (Solventa): el pago cubre PRIMERO el interés del periodo y el resto abona a
+    // capital. Así un pago de 1.000.000 se registra como 1.000.000 (no se le suma
+    // el interés encima): p.ej. 40.000 a interés + 960.000 a capital.
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    const amount = round2(Number(paymentData.amount));
+    const currentBalance = round2(Number(loan.remainingBalance));
+    const periodInterest = round2(loan.calculateInterest());
+    const maxPayable = round2(currentBalance + periodInterest); // liquidar todo
 
-    // Validar que el pago a capital no exceda el saldo pendiente
-    if (capitalPayment > currentBalance) {
+    if (amount <= 0) {
+      throw new BadRequestException('El monto del pago debe ser mayor a cero');
+    }
+    if (amount > maxPayable) {
       throw new BadRequestException(
-        `El pago a capital (${capitalPayment}) no puede ser mayor al saldo pendiente (${currentBalance})`
+        `El pago (${amount}) no puede exceder el saldo + interés del periodo (${maxPayable}).`,
       );
     }
 
-    if (capitalPayment <= 0) {
-      throw new BadRequestException('El pago a capital debe ser mayor a cero');
-    }
+    // Interés primero, el resto a capital.
+    const interestCharged = Math.min(periodInterest, amount);
+    const capitalPayment = round2(amount - interestCharged);
+    const remainingBalance = round2(currentBalance - capitalPayment);
+    const amountPaid = amount;
 
-    // Calcular interés sobre el saldo actual
-    const interestCharged = loan.calculateInterest();
-    
-    // Calcular nuevo saldo
-    const remainingBalance = currentBalance - capitalPayment;
-
-    // Monto total del pago (capital + interés)
-    const amountPaid = capitalPayment + interestCharged;
-
-    this.logger.log(`💰 Registrando pago manual - Préstamo: ${loanId}, Capital: ${capitalPayment}, Interés: ${interestCharged}`);
+    this.logger.log(
+      `💰 Pago manual - Préstamo: ${loanId}, Total: ${amountPaid}, Interés: ${interestCharged}, Capital: ${capitalPayment}, Saldo: ${remainingBalance}`,
+    );
 
     // Crear el registro de pago
     const payment = this.paymentRepository.create({

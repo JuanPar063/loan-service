@@ -5,12 +5,13 @@ import { ApiProperty } from '@nestjs/swagger';
 
 export class ManualPaymentDto {
   @ApiProperty({
-    description: 'Monto pagado a capital (debe ser menor o igual al saldo pendiente)',
-    example: 500,
+    description:
+      'Monto TOTAL que paga el cliente. Cubre primero el interés del periodo y el resto abona a capital (no se suma interés encima).',
+    example: 500000,
   })
   @IsNumber()
   @IsPositive()
-  capitalPayment: number;
+  amount: number;
 
   @ApiProperty({
     description: 'Fecha del pago (formato ISO 8601)',
