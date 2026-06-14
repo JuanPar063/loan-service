@@ -17,6 +17,7 @@ import { Loan } from './domain/entities/loan.entity';
 import { Payment } from './domain/entities/payment.entity';
 import { PaymentIdempotency } from './domain/entities/payment-idempotency.entity';
 import { ProfileExternalAdapter } from './infrastructure/adapters/in/ProfileExternalHTTP';
+import { EventsPublisher } from './infrastructure/messaging/events.publisher';
 
 @Module({
   imports: [
@@ -61,6 +62,7 @@ import { ProfileExternalAdapter } from './infrastructure/adapters/in/ProfileExte
   providers: [
     LoanService,
     ProfileExternalAdapter,
+    EventsPublisher,
     { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
   exports: [LoanService],

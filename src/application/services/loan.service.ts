@@ -7,6 +7,7 @@ import { Loan, LoanStatus, LoanType } from '../../domain/entities/loan.entity';
 import { Payment } from '../../domain/entities/payment.entity';
 import { PaymentIdempotency } from '../../domain/entities/payment-idempotency.entity';
 import { ProfileExternalAdapter } from '../../infrastructure/adapters/in/ProfileExternalHTTP';
+import { EventsPublisher } from '../../infrastructure/messaging/events.publisher';
 
 
 export interface EnrichedLoanDto extends Omit<Loan, 'calculateInterest' | 'isMonthlyInterestType' | 'isFixedInstallmentsType' | 'canTransitionTo'> {
@@ -88,6 +89,7 @@ export class LoanService {
     @InjectRepository(PaymentIdempotency)
     private readonly idempotencyRepository: Repository<PaymentIdempotency>,
     private readonly profileExternalAdapter: ProfileExternalAdapter,
+    private readonly events: EventsPublisher,
   ) {}
 
   /** Cambia el estado del préstamo validando la máquina de estados. */
@@ -514,7 +516,9 @@ async requestLoan(loanData: {
     loan.paymentFrequency = approvalData.paymentFrequency as any;
     loan.approvedAt = new Date();
 
-    return await this.loanRepository.save(loan);
+    const saved = await this.loanRepository.save(loan);
+    await this.events.publish('LoanApproved', { loanId: saved.id, userId: saved.userId });
+    return saved;
   }
 
   /**
@@ -592,6 +596,13 @@ async requestLoan(loanData: {
 
     this.logger.log(`✅ Pago registrado exitosamente - ID: ${savedPayment.id}`);
 
+    await this.events.publish('PaymentRegistered', {
+      loanId,
+      userId: loan.userId,
+      amount: amountPaid,
+      remainingBalance,
+    });
+
     return savedPayment;
   }
 
@@ -639,6 +650,14 @@ async requestLoan(loanData: {
     await this.loanRepository.save(loan);
     const savedPayment = await this.paymentRepository.save(payment);
     await this.recordIdempotency(loanId, idempotencyKey, savedPayment.id);
+
+    await this.events.publish('PaymentRegistered', {
+      loanId,
+      userId: loan.userId,
+      amount,
+      remainingBalance,
+    });
+
     return savedPayment;
   }
 
